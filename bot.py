@@ -2,7 +2,6 @@
 # Voice verification bot for existing & new members
 from telethon import TelegramClient, events
 from telethon.tl.custom import Button
-from telethon.tl import types # Import types for ChatAction check
 from pymongo import MongoClient
 # Note: If pydub causes deployment issues again, comment out the import and analysis functions.
 from pydub import AudioSegment 
@@ -98,11 +97,14 @@ async def start(event):
         await event.respond("🛡️ இந்த போட் குழு சேர்வு செயல்முறைக்கானது. நீங்கள் சேர விண்ணப்பித்தால், உங்களுக்கு செய்தி அனுப்பப்படும்.")
     await event.delete()
 
-# --- Handle Join Request ---
-# Fixed the event filter using isinstance and types.ChatActionRequestedJoin
-@bot.on(events.ChatAction(func=lambda e: isinstance(e.action, types.ChatActionRequestedJoin)))
+# --- Handle Join Request using ChatJoinRequest ---
+@bot.on(events.ChatJoinRequest)
 async def handle_join_request(event):
-    user = await event.get_user()
+    # With ChatJoinRequest, the user info is directly on the event object
+    user = await event.get_user() 
+    # The chat (group) is also directly available
+    chat = await event.get_chat()
+
     pending_col.update_one(
         {"user_id": user.id},
         {"$set": {
@@ -115,22 +117,24 @@ async def handle_join_request(event):
     )
 
     try:
+        # Send DM to the user who requested to join
         msg = await bot.send_message(user.id, WELCOME_MSG.format(name=esc(user.first_name)))
-        logger.info(f"Sent welcome to {user.id}")
+        logger.info(f"Sent welcome DM to {user.id}")
 
-        # Schedule 24h reminder
+        # Schedule 2-hour reminder (based on your message content)
+        # Config.VOICE_PENDING_TIMEOUT should be 2 hours (7200 seconds)
         asyncio.create_task(reminder_task(user.id, user.first_name))
 
-        # --- Log to Mod Group (MOVED INSIDE THE TRY BLOCK) ---
-        group_id_part = str(Config.GROUP_ID)[4:]
+        # --- Log to Mod Group ---
+        group_id_part = str(chat.id)[4:] # Use chat.id from the event
         topic_link = (
-            f"[👉 Go to Topic](https://t.me/c/{group_id_part}/{Config.TOPIC_ID})" # Fixed space
+            f"[👉 Go to Topic](https://t.me/c/{group_id_part}/{Config.TOPIC_ID})"
             if Config.TOPIC_ID
             else "N/A"
         )
 
         await log_mod(
-            f"*Join Request Received*\n"
+            f"*📩 Join Request Received*\n" # Changed emoji for clarity
             f"• Name: [{esc(user.first_name)}](tg://user?id={user.id})\n"
             f"• Username: @{user.username}\n"
             f"• ID: `{user.id}`\n"
@@ -140,34 +144,16 @@ async def handle_join_request(event):
         )
         # --- End of Logging ---
     except Exception as e:
+        # Log failure to DM user
         await log_mod(f"❌ Failed to DM applicant {user.id}: {e}")
-        # Don't return here, let the function end naturally or handle as needed
-        # If you want to stop processing on DM failure, `return` is okay, but
-        # ensure the log_mod outside the try isn't executed.
-        return # This is fine if you intend to stop on DM error
+        # Depending on your strategy, you might want to log this request failure differently
+        # or even notify admins. For now, we just log and let the function end.
+        logger.error(f"Error handling join request for {user.id}: {e}")
+        # No return needed, function will end naturally
 
-    # Code here would run only if the try block succeeded completely.
-    # Since we moved the logging inside, there's nothing else needed here
-    # for this specific logic flow.
-# --- Diagnostic: Handle standard user join (e.g., via link) ---
-@bot.on(events.ChatAction(func=lambda e: e.is_group and e.user_joined and e.chat_id == Config.GROUP_ID))
-async def handle_user_joined_via_link(event):
-    # Only trigger if they are NOT already pending (i.e., didn't come through request)
-    user = await event.get_user()
-    record = pending_col.find_one({"user_id": user.id, "status": "pending"})
-    if not record: # If no pending request, treat like a new member needing verification
-        logger.info(f"User {user.id} joined via link or other method, initiating verification flow.")
-        # Manually trigger the same logic as handle_join_request
-        # You could call a helper function here or duplicate the core parts.
-        # For now, just log and send a test message.
-        try:
-            await bot.send_message(user.id, "Welcome! You joined via link. Please send a voice note for verification.")
-            # Log to mod group
-            await log_mod(f"*ℹ️ User joined via link (not request)*\n• Name: [{esc(user.first_name)}](tg://user?id={user.id})\n• ID: `{user.id}`")
-        except Exception as e:
-            logger.error(f"Failed to message user {user.id} who joined via link: {e}")
-    else:
-        logger.info(f"User {user.id} joined, but they were already pending approval. This might be unexpected.")
+    # Code here runs only if the try block finishes (successfully sending DM and logging)
+    # Nothing else needed for this specific logic flow.
+
 
 # --- 24-Hour Reminder ---
 async def reminder_task(user_id, name):
@@ -176,7 +162,7 @@ async def reminder_task(user_id, name):
     if record:
         try:
             await bot.send_message(user_id, REMINDER_MSG.format(name=esc(name)))
-            logger.info(f"Sent 24h reminder to {user_id}")
+            logger.info(f"Sent 2h reminder to {user_id}")
         except Exception as e:
             logger.warning(f"Failed to send reminder to {user_id}: {e}")
 
