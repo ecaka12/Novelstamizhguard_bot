@@ -37,7 +37,10 @@ REJECTED_MSG = """❌ உங்கள் விண்ணப்பம் நி�
 
 # Helper
 def esc(s):
-    return str(s).replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]').replace('`', '\\`').replace('~', '\\~').replace('>', '\\>').replace('#', '\\#').replace('+', '\\+').replace('-', '\\-').replace('=', '\\=').replace('|', '\\|').replace('{', '\\{').replace('}', '\\}').replace('.', '\\.').replace('!', '\\!').replace('(', '\\(').replace(')', '\\)')
+    s = str(s) if s else "N/A"
+    for c in r'\_*[]()~`>#+-=|{}.!':
+        s = s.replace(c, f'\\{c}')
+    return s
 
 async def log_mod(text):
     try:
@@ -113,26 +116,34 @@ async def handle_join_request(event):
         # Schedule 24h reminder
         asyncio.create_task(reminder_task(user.id, user.first_name))
 
+        # --- Log to Mod Group (MOVED INSIDE THE TRY BLOCK) ---
+        group_id_part = str(Config.GROUP_ID)[4:]
+        topic_link = (
+            f"[👉 Go to Topic](https://t.me/c/{group_id_part}/{Config.TOPIC_ID})" # Fixed space
+            if Config.TOPIC_ID
+            else "N/A"
+        )
+
+        await log_mod(
+            f"*Join Request Received*\n"
+            f"• Name: [{esc(user.first_name)}](tg://user?id={user.id})\n"
+            f"• Username: @{user.username}\n"
+            f"• ID: `{user.id}`\n"
+            f"• Status: Awaiting voice note\n"
+            f"{topic_link}",
+            parse_mode='markdown'
+        )
+        # --- End of Logging ---
     except Exception as e:
         await log_mod(f"❌ Failed to DM applicant {user.id}: {e}")
-        return
+        # Don't return here, let the function end naturally or handle as needed
+        # If you want to stop processing on DM failure, `return` is okay, but
+        # ensure the log_mod outside the try isn't executed.
+        return # This is fine if you intend to stop on DM error
 
-    group_id_part = str(Config.GROUP_ID)[4:]
-topic_link = (
-    f"[👉 Go to Topic](https://t.me/c/{group_id_part}/{Config.TOPIC_ID})"
-    if Config.TOPIC_ID
-    else "N/A"
-)
-
-await log_mod(
-    f"*Join Request Received*\n"
-    f"• Name: [{esc(user.first_name)}](tg://user?id={user.id})\n"
-    f"• Username: @{user.username}\n"
-    f"• ID: `{user.id}`\n"
-    f"• Status: Awaiting voice note\n"
-    f"{topic_link}",
-    parse_mode='markdown'
-)
+    # Code here would run only if the try block succeeded completely.
+    # Since we moved the logging inside, there's nothing else needed here
+    # for this specific logic flow.
 
 # --- 24-Hour Reminder ---
 async def reminder_task(user_id, name):
