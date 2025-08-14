@@ -2,12 +2,15 @@
 # Voice verification bot for existing & new members
 from telethon import TelegramClient, events
 from telethon.tl.custom import Button
+from telethon.tl import types # Import types for ChatAction check
 from pymongo import MongoClient
-from pydub import AudioSegment # Assuming you fixed the pydub issue or re-enabled it
+# Note: If pydub causes deployment issues again, comment out the import and analysis functions.
+from pydub import AudioSegment 
 import io, os, asyncio, logging
 from datetime import datetime, timezone, timedelta
-import re # <--- ADD THIS LINE
+import re # Required for callback regex
 from config import Config
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,7 @@ REMINDER_MSG = """⏰ வணக்கம், {name}!
 
 உடனே அனுப்பவும், இல்லையெனில் உங்கள் விண்ணப்பம் தானாக நிராகரிக்கப்படும்."""
 
+# Fixed the extra space in the URL format string
 APPROVED_MSG = """🎉 வாழ்த்துகள்! நீங்கள் குழுவில் சேர்க்கப்பட்டுள்ளீர்கள்!
 👉 இங்கே செல்லவும்: https://t.me/c/{group_id_part}/{topic_id}"""
 
@@ -48,20 +52,20 @@ async def log_mod(text):
     except Exception as e:
         logger.warning(f"Failed to log: {e}")
 
-# --- Voice Analysis Functions ---
+# --- Voice Analysis Functions (Ensure pydub is working or comment out if needed) ---
 def is_too_short(audio_data, min_duration=3000):  # 3 sec
     try:
         audio = AudioSegment.from_file(io.BytesIO(audio_data), format="ogg")
         return len(audio) < min_duration
     except:
-        return True
+        return True # Default to True if analysis fails
 
 def is_silence(audio_data, silence_threshold=-50.0):
     try:
         audio = AudioSegment.from_file(io.BytesIO(audio_data), format="ogg")
         return audio.dBFS < silence_threshold
     except:
-        return True
+        return True # Default to True if analysis fails
 
 def is_robotic_tts(audio_data):
     try:
@@ -72,7 +76,7 @@ def is_robotic_tts(audio_data):
         variance = sum(abs(chunks[i] - chunks[i-1]) for i in range(1, len(chunks))) / len(chunks)
         return variance < 2.0  # Low variation = likely robotic
     except:
-        return True
+        return True # Default to True if analysis fails
 
 # --- Deep Link Handler ---
 @bot.on(events.NewMessage(pattern='/start'))
@@ -95,7 +99,8 @@ async def start(event):
     await event.delete()
 
 # --- Handle Join Request ---
-@bot.on(events.ChatAction(func=lambda e: e.user_requested_to_join))
+# Fixed the event filter using isinstance and types.ChatActionRequestedJoin
+@bot.on(events.ChatAction(func=lambda e: isinstance(e.action, types.ChatActionRequestedJoin)))
 async def handle_join_request(event):
     user = await event.get_user()
     pending_col.update_one(
@@ -166,7 +171,7 @@ async def handle_voice(event):
 
     voice_data = await event.download_media(bytes)
 
-    # Analyze voice
+    # Analyze voice (if pydub is working)
     issues = []
     if is_too_short(voice_data):
         issues.append("⚠️ Too short (<3s)")
@@ -244,6 +249,7 @@ async def main():
     logger.info("🛡️ NovelsTamilGuardBot is running...")
     await bot.run_until_disconnected()
 
+# Keep nest_asyncio import and application here as before
 if __name__ == '__main__':
     import nest_asyncio
     nest_asyncio.apply()
