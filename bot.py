@@ -150,6 +150,16 @@ async def handle_join_request(event):
         await log_mod(f"❌ Failed to DM applicant {user.id}: {e}")
         logger.error(f"Error handling join request for {user.id}: {e}")
         # No return needed, function will end naturally
+# --- Handle Join Request using ChatJoinRequest (Telethon 1.40.0+) ---
+# OR the ChatAction version if you reverted
+@bot.on(events.ChatJoinRequest) # Or your ChatAction decorator
+async def handle_join_request(event):
+    logger.info(f"--- DEBUG: ChatJoinRequest event received for user ID: {event.user_id} in chat ID: {event.chat_id} ---")
+    # ... rest of your existing handle_join_request code ...
+    # Add a log right after getting the user object:
+    # user = await event.get_user()
+    logger.info(f"--- DEBUG: Processing join request for user: {user.first_name} ({user.id}) ---")
+    # ... rest of the function ...
 
 
 # --- 2-Hour Reminder ---
