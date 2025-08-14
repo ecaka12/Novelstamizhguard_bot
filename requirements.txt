@@ -1,4 +1,4 @@
-telethon==1.38.5
+telethon==1.40.0    
 pymongo==4.10.1
 pydub==0.5.4
 dnspython==2.6.1
