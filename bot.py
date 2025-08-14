@@ -149,6 +149,25 @@ async def handle_join_request(event):
     # Code here would run only if the try block succeeded completely.
     # Since we moved the logging inside, there's nothing else needed here
     # for this specific logic flow.
+# --- Diagnostic: Handle standard user join (e.g., via link) ---
+@bot.on(events.ChatAction(func=lambda e: e.is_group and e.user_joined and e.chat_id == Config.GROUP_ID))
+async def handle_user_joined_via_link(event):
+    # Only trigger if they are NOT already pending (i.e., didn't come through request)
+    user = await event.get_user()
+    record = pending_col.find_one({"user_id": user.id, "status": "pending"})
+    if not record: # If no pending request, treat like a new member needing verification
+        logger.info(f"User {user.id} joined via link or other method, initiating verification flow.")
+        # Manually trigger the same logic as handle_join_request
+        # You could call a helper function here or duplicate the core parts.
+        # For now, just log and send a test message.
+        try:
+            await bot.send_message(user.id, "Welcome! You joined via link. Please send a voice note for verification.")
+            # Log to mod group
+            await log_mod(f"*ℹ️ User joined via link (not request)*\n• Name: [{esc(user.first_name)}](tg://user?id={user.id})\n• ID: `{user.id}`")
+        except Exception as e:
+            logger.error(f"Failed to message user {user.id} who joined via link: {e}")
+    else:
+        logger.info(f"User {user.id} joined, but they were already pending approval. This might be unexpected.")
 
 # --- 24-Hour Reminder ---
 async def reminder_task(user_id, name):
