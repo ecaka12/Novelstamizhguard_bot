@@ -3,11 +3,11 @@
 from telethon import TelegramClient, events
 from telethon.tl.custom import Button
 from pymongo import MongoClient
-from pydub import AudioSegment
+from pydub import AudioSegment # Assuming you fixed the pydub issue or re-enabled it
 import io, os, asyncio, logging
 from datetime import datetime, timezone, timedelta
+import re # <--- ADD THIS LINE
 from config import Config
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
