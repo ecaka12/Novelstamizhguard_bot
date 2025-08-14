@@ -1,13 +1,14 @@
 # bot.py - @NovelsTamilGuardBot
 # Voice verification bot for existing & new members
+# Compatible with Telethon 1.40.0
 from telethon import TelegramClient, events
 from telethon.tl.custom import Button
 from pymongo import MongoClient
 # Note: If pydub causes deployment issues again, comment out the import and analysis functions.
-from pydub import AudioSegment 
+from pydub import AudioSegment
 import io, os, asyncio, logging
 from datetime import datetime, timezone, timedelta
-import re # Required for callback regex
+import re  # Required for callback regex
 from config import Config
 
 logging.basicConfig(level=logging.INFO)
@@ -57,14 +58,14 @@ def is_too_short(audio_data, min_duration=3000):  # 3 sec
         audio = AudioSegment.from_file(io.BytesIO(audio_data), format="ogg")
         return len(audio) < min_duration
     except:
-        return True # Default to True if analysis fails
+        return True  # Default to True if analysis fails
 
 def is_silence(audio_data, silence_threshold=-50.0):
     try:
         audio = AudioSegment.from_file(io.BytesIO(audio_data), format="ogg")
         return audio.dBFS < silence_threshold
     except:
-        return True # Default to True if analysis fails
+        return True  # Default to True if analysis fails
 
 def is_robotic_tts(audio_data):
     try:
@@ -72,10 +73,10 @@ def is_robotic_tts(audio_data):
         chunks = [chunk.dBFS for chunk in audio[::1000] if chunk.dBFS > -100]
         if len(chunks) < 2:
             return True
-        variance = sum(abs(chunks[i] - chunks[i-1]) for i in range(1, len(chunks))) / len(chunks)
+        variance = sum(abs(chunks[i] - chunks[i - 1]) for i in range(1, len(chunks))) / len(chunks)
         return variance < 2.0  # Low variation = likely robotic
     except:
-        return True # Default to True if analysis fails
+        return True  # Default to True if analysis fails
 
 # --- Deep Link Handler ---
 @bot.on(events.NewMessage(pattern='/start'))
@@ -97,11 +98,11 @@ async def start(event):
         await event.respond("🛡️ இந்த போட் குழு சேர்வு செயல்முறைக்கானது. நீங்கள் சேர விண்ணப்பித்தால், உங்களுக்கு செய்தி அனுப்பப்படும்.")
     await event.delete()
 
-# --- Handle Join Request using ChatJoinRequest ---
+# --- Handle Join Request using ChatJoinRequest (Telethon 1.40.0+) ---
 @bot.on(events.ChatJoinRequest)
 async def handle_join_request(event):
     # With ChatJoinRequest, the user info is directly on the event object
-    user = await event.get_user() 
+    user = await event.get_user()
     # The chat (group) is also directly available
     chat = await event.get_chat()
 
@@ -126,7 +127,7 @@ async def handle_join_request(event):
         asyncio.create_task(reminder_task(user.id, user.first_name))
 
         # --- Log to Mod Group ---
-        group_id_part = str(chat.id)[4:] # Use chat.id from the event
+        group_id_part = str(chat.id)[4:]  # Use chat.id from the event
         topic_link = (
             f"[👉 Go to Topic](https://t.me/c/{group_id_part}/{Config.TOPIC_ID})"
             if Config.TOPIC_ID
@@ -134,7 +135,7 @@ async def handle_join_request(event):
         )
 
         await log_mod(
-            f"*📩 Join Request Received*\n" # Changed emoji for clarity
+            f"*📩 Join Request Received*\n"  # Changed emoji for clarity
             f"• Name: [{esc(user.first_name)}](tg://user?id={user.id})\n"
             f"• Username: @{user.username}\n"
             f"• ID: `{user.id}`\n"
@@ -232,11 +233,16 @@ async def handle_approval(event):
         group_id_part = str(Config.GROUP_ID)[4:]
 
         if action == "approve":
-            await bot.edit_permissions(Config.GROUP_ID, user_id, view_messages=True)
+            # Use the request object from the event to approve
+            await event.approve()
+            # Send confirmation to user
             await bot.send_message(user_id, APPROVED_MSG.format(name=name, group_id_part=group_id_part, topic_id=Config.TOPIC_ID))
             pending_col.update_one({"user_id": user.id}, {"$set": {"status": "approved"}})
             status_msg = "✅ Approved"
         else:
+            # Use the request object from the event to decline
+            await event.decline()
+            # Send notification to user
             await bot.send_message(user_id, REJECTED_MSG)
             pending_col.update_one({"user_id": user.id}, {"$set": {"status": "rejected"}})
             status_msg = "❌ Rejected"
