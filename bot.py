@@ -162,7 +162,7 @@ async def start_bot():
             logger.info(f"📤 Forwarding voice note from {user.id} to MODLOG_CHAT")
             msg = await event.forward_to(Config.MODLOG_CHAT)
             await event.reply("✅ குரல் பதிவு பெறப்பட்டது. நிர்வாகி விரைவில் பதிலளிப்பார்.")
-            
+
             # Update database status and store message ID
             pending.update_one(
                 {"user_id": user.id},
@@ -186,69 +186,90 @@ async def start_bot():
             logger.error(error_msg)
             await log_mod(error_msg)
 
-    # Handle user joining the group (ChatAction)
+    # Handle user joining the group (ChatAction) - Enhanced Debugging
     @bot.on(events.ChatAction)
     async def chat_action_handler(event):
+        # --- Enhanced Debug Logging START ---
+        logger.debug(f"🔍 === DEBUG ChatAction Event Details ===")
+        logger.debug(f"  Event Type: {type(event)}")
+        logger.debug(f"  Event Chat ID: {event.chat_id}")
+        logger.debug(f"  Event Original Chat ID (if different): {getattr(event, 'original_chat_id', 'N/A')}")
+        logger.debug(f"  Event Users: {getattr(event, 'users', 'N/A')}")
+        logger.debug(f"  Event User IDs: {getattr(event, 'user_ids', 'N/A')}")
+        logger.debug(f"  Event Added By: {getattr(event, 'added_by', 'N/A')}")
+        logger.debug(f"  Event Kicked: {getattr(event, 'user_kicked', False)}")
+        logger.debug(f"  Event Left: {getattr(event, 'user_left', False)}")
+        logger.debug(f"  Event Joined: {getattr(event, 'user_joined', False)}")
+        logger.debug(f"  Event Invited: {getattr(event, 'user_invited', False)}") # Newer attribute
+        logger.debug(f"  Event Added: {getattr(event, 'user_added', False)}")
+        if hasattr(event, 'action_message') and event.action_message:
+            logger.debug(f"  Action Message Action Type: {type(event.action_message.action)}")
+            logger.debug(f"  Action Message Action Details: {event.action_message.action}")
+        logger.debug(f"  Config.GROUP_ID: {Config.GROUP_ID}")
+        logger.debug(f"  Match Check (event.chat_id == Config.GROUP_ID): {event.chat_id == Config.GROUP_ID}")
+        logger.debug(f"🔍 === END DEBUG ChatAction Event Details ===")
+        # --- Enhanced Debug Logging END ---
+
         # Only proceed if it's our target group
         if event.chat_id != Config.GROUP_ID:
+            logger.debug(f"⏭️ Skipping ChatAction, not our target group ({Config.GROUP_ID}).")
             return
 
-        # Check for user joining (this is the standard event for users joining)
-        if event.user_joined or event.user_added:
-            users = event.users if event.users else [await event.get_user()]
-            logger.info(f"👥 ChatAction event received for group {event.chat_id}")
-            for user in users:
-                if not user:
-                    continue
-                logger.info(f"📥 User joined: {user.id} ({user.first_name})")
+        logger.info(f"👥 Relevant ChatAction event received for group {event.chat_id}")
 
-                # Check if the user already has a pending or started record
-                existing_record = pending.find_one({"user_id": user.id})
-                if existing_record and existing_record.get("status") in ["pending", "started"]:
-                    logger.info(f"🔁 User {user.id} already has a pending/started record. Updating.")
-                    # Update the record to pending upon actual join
-                    pending.update_one(
-                        {"user_id": user.id},
-                        {"$set": {
-                            "request_time": datetime.now(timezone.utc),
-                            "status": "pending" # Ensure status is pending
-                        }}
-                    )
-                else:
-                    # Create a new pending record if none exists or status is different
-                    logger.info(f"🆕 Creating new pending record for user {user.id}")
-                    pending.update_one(
-                        {"user_id": user.id},
-                        {"$set": {
-                            "first_name": user.first_name,
-                            "username": user.username,
-                            "request_time": datetime.now(timezone.utc),
-                            "status": "pending"
-                        }},
-                        upsert=True
-                    )
+        # Check for user joining or being added (cover different join scenarios)
+        # Include user_invited which might be relevant for invite links
+        if not (event.user_joined or event.user_added or event.user_invited):
+             logger.debug("⏭️ Skipping ChatAction, not a join/add/invite event.")
+             return
 
-                # Send welcome message and start reminder
-                try:
-                    logger.info(f"📤 Sending WELCOME_MSG to {user.id}")
-                    await bot.send_message(user.id, WELCOME_MSG.format(name=esc(user.first_name)))
-                    logger.info(f"✅ Sent welcome DM to {user.id}")
-                    # Start reminder task
-                    asyncio.create_task(reminder_task(user.id, user.first_name))
-                except errors.UserIsBlockedError:
-                    logger.warning(f"🚫 User {user.id} has blocked the bot. Cannot send welcome message.")
-                    await log_mod(f"⚠️ DM failed for {user.id} ({user.first_name}): User blocked the bot.")
-                except errors.InputUserDeactivatedError:
-                    logger.warning(f"💀 User {user.id} account is deactivated.")
-                    await log_mod(f"⚠️ DM failed for {user.id} ({user.first_name}): User account deactivated.")
-                except Exception as e:
-                    error_msg = f"❌ Failed to DM {user.id} ({user.first_name}): {type(e).__name__}: {e}"
-                    logger.error(error_msg)
-                    await log_mod(error_msg)
-        # Optional: Handle join requests if needed (though ChatAction should cover standard joins)
-        # elif isinstance(event.action_message.action, types.ChatActionRequestedJoin):
-        #    # ... (similar logic as above) ...
-        #    pass # Placeholder for explicit join request handling if needed
+        # Get list of users affected
+        users = event.users if event.users else [await event.get_user()] if event.user else []
+        logger.info(f"👥 Users involved in ChatAction: {[u.id for u in users if u]}")
+
+        for user in users:
+            if not user:
+                logger.warning("⚠️ Encountered None user in ChatAction event users list.")
+                continue
+            logger.info(f"📥 Processing join/add/invite for user: {user.id} ({user.first_name})")
+
+            # Check if the user already has a pending or started record
+            existing_record = pending.find_one({"user_id": user.id})
+            logger.debug(f"  Existing DB record for {user.id}: {existing_record}")
+
+            # Always update/create the record to mark as pending upon join
+            update_data = {
+                "first_name": user.first_name,
+                "username": user.username,
+                "request_time": datetime.now(timezone.utc),
+                "status": "pending"
+            }
+            logger.info(f"💾 Updating/Creating pending record for {user.id} with  {update_data}")
+            pending.update_one(
+                {"user_id": user.id},
+                {"$set": update_data},
+                upsert=True
+            )
+            logger.info(f"✅ Database record for {user.id} updated to 'pending'.")
+
+            # Send welcome message and start reminder
+            try:
+                logger.info(f"📤 Sending WELCOME_MSG to {user.id}")
+                await bot.send_message(user.id, WELCOME_MSG.format(name=esc(user.first_name)))
+                logger.info(f"✅ Sent welcome DM to {user.id}")
+                # Start reminder task
+                asyncio.create_task(reminder_task(user.id, user.first_name))
+                logger.info(f"⏱️ Started reminder task for {user.id}")
+            except errors.UserIsBlockedError:
+                logger.warning(f"🚫 User {user.id} has blocked the bot. Cannot send welcome message.")
+                await log_mod(f"⚠️ DM failed for {user.id} ({user.first_name}): User blocked the bot.")
+            except errors.InputUserDeactivatedError:
+                logger.warning(f"💀 User {user.id} account is deactivated.")
+                await log_mod(f"⚠️ DM failed for {user.id} ({user.first_name}): User account deactivated.")
+            except Exception as e:
+                error_msg = f"❌ Failed to DM {user.id} ({user.first_name}): {type(e).__name__}: {e}"
+                logger.error(error_msg)
+                await log_mod(error_msg)
 
     # Approval/Rejection callback
     @bot.on(events.CallbackQuery(pattern=r"^(approve|reject)_(\d+)$"))
