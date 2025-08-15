@@ -37,7 +37,7 @@ class Config:
 
 # ---------------- Database ----------------
 mongo = MongoClient(Config.MONGO_URI)
-db = mongo.guard_bot
+db = mongo.telegram_bot
 pending = db.pending_applications  # user_id, status, etc.
 
 # ---------------- Bot Client ----------------
