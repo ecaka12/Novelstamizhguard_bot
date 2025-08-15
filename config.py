@@ -1,22 +1,9 @@
-# config.py
-import os
-from typing import List
-
-class Config:
-    API_ID = int(os.getenv("API_ID"))
-    API_HASH = os.getenv("API_HASH")
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    
-    GROUP_ID = int(os.getenv("GROUP_ID"))
-    MODLOG_GROUP_ID = int(os.getenv("MODLOG_GROUP_ID"))
-    
-    # Ensure ADMINS is a comma-separated list of IDs in your Railway env vars
-    ADMINS = list(map(int, os.getenv("ADMINS", "5504106603").split(',')))
-    
-    MONGO_URI = os.getenv("MONGO_URI")
-    
-    # Optional: Topic ID if using forum topics
-    TOPIC_ID = int(os.getenv("TOPIC_ID", "0"))
-    
-    # Updated timeout to match your 2-hour messages
-    VOICE_PENDING_TIMEOUT = 2 * 60 * 60  # 2 hours (7200 seconds)
+API_ID = 22272737
+API_HASH = "eccd9fc5ea02c32428f1345bb5b8ebf2"
+BOT_TOKEN = "8212039977:AAESysY_CtVYc4u_IpE_UMjfqb79dRGblJQ"
+MONGO_URI = "mongodb+srv://ecaka12:UGo5VfYU4wXtefMM@cluster0.iqq1qf3.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+GROUP_ID = -1002866490205
+TOPIC_ID = 123
+MODLOG_CHAT = -1002784568524
+ADMINS = [5504106603,1276653697,6221636731]
+TIMEOUT = 7200  # 2 hours
