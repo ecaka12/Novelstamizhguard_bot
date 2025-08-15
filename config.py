@@ -1,9 +1,13 @@
-API_ID = 22272737
-API_HASH = "eccd9fc5ea02c32428f1345bb5b8ebf2"
-BOT_TOKEN = "8212039977:AAESysY_CtVYc4u_IpE_UMjfqb79dRGblJQ"
-MONGO_URI = "mongodb+srv://ecaka12:UGo5VfYU4wXtefMM@cluster0.iqq1qf3.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-GROUP_ID = -1002866490205
-TOPIC_ID = 123
-MODLOG_CHAT = -1002784568524
-ADMINS = [5504106603,1276653697,6221636731]
-TIMEOUT = 7200  # 2 hours
+# config.py
+import os
+
+class Config:
+    API_ID = int(os.getenv("API_ID"))
+    API_HASH = os.getenv("API_HASH")
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    MONGO_URI = os.getenv("MONGO_URI")
+    GROUP_ID = int(os.getenv("GROUP_ID"))
+    TOPIC_ID = int(os.getenv("TOPIC_ID", 0))  # Optional
+    MODLOG_CHAT = int(os.getenv("MODLOG_CHAT"))
+    ADMINS = [int(id) for id in os.getenv("ADMINS", "").split(",") if id.strip()]
+    TIMEOUT = int(os.getenv("TIMEOUT", "7200"))  # 2 hours
