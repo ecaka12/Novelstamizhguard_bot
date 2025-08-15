@@ -1,11 +1,12 @@
 # bot.py - @novelstamizhguard_bot
-# Voice verification bot for Tamil Novels group
-# Uses deep link + ChatAction fallback
+# Voice verification bot for Tamil Novels
+# Now works reliably with Telegram's DM rules
 
 import os, io, asyncio, logging
 from datetime import datetime, timezone
 from telethon import TelegramClient, events
 from telethon.tl import types
+from telethon.tl.custom import Button
 from pymongo import MongoClient
 
 # Optional audio analysis
@@ -22,7 +23,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ---------------- Load Config ----------------
+# ---------------- Config ----------------
 class Config:
     API_ID = int(os.getenv("API_ID"))
     API_HASH = os.getenv("API_HASH")
@@ -32,17 +33,25 @@ class Config:
     TOPIC_ID = int(os.getenv("TOPIC_ID", "0"))
     MODLOG_CHAT = int(os.getenv("MODLOG_CHAT"))
     ADMINS = [int(x) for x in os.getenv("ADMINS", "").split(",") if x.strip()]
-    TIMEOUT = int(os.getenv("TIMEOUT", "7200"))
+    TIMEOUT = int(os.getenv("TIMEOUT", "7200"))  # 2 hours
 
 # ---------------- Database ----------------
 mongo = MongoClient(Config.MONGO_URI)
 db = mongo.guard_bot
-pending = db.pending_applications
+pending = db.pending_applications  # user_id, status, etc.
 
 # ---------------- Bot Client ----------------
 bot = TelegramClient('guard_bot', Config.API_ID, Config.API_HASH)
 
 # ---------------- Messages ----------------
+START_MSG = (
+    "🛡️ வணக்கம்! நீங்கள் **Tamil Novels** குழுவில் சேர விரும்பினால், பின்வரும் படிகளை பின்பற்றவும்:\n\n"
+    "1. இந்த போட்டில் ஏதேனும் ஒரு செய்தியை அனுப்பவும் (எ.கா: **Hi**)\n"
+    "2. பின்னர் குழுவில் சேர விண்ணப்பிக்கவும்: https://t.me/+_1n657JUXHIzODk1\n"
+    "3. பின்னர் ஒரு **குரல் பதிவு** அனுப்பவும்.\n\n"
+    "✅ இது பாதுகாப்பு செயல்முறை. நன்றி!"
+)
+
 WELCOME_MSG = (
     "👋 வணக்கம், {name}!\n\n"
     "நீங்கள் **Tamil Novels** குழுவில் சேர விண்ணப்பித்துள்ளீர்கள்.\n\n"
@@ -68,8 +77,6 @@ APPROVED_MSG = (
 )
 
 REJECTED_MSG = "❌ உங்கள் விண்ணப்பம் நிராகரிக்கப்பட்டது."
-
-JOIN_LINK = "https://t.me/+_1n657JUXHIzODk1"  # Your group invite link
 
 # ---------------- Helpers ----------------
 def esc(s):
@@ -105,17 +112,13 @@ async def start_bot():
     # Auto-detect handler
     if hasattr(events, 'ChatJoinRequest'):
         logger.info("🚀 Using ChatJoinRequest (Telethon >= 1.40)")
-
         @bot.on(events.ChatJoinRequest)
         async def handler(event):
-            if event.chat_id != Config.GROUP_ID:
-                return
+            if event.chat_id != Config.GROUP_ID: return
             user = await event.get_user()
             await handle_join_request(user, event)
-
     else:
         logger.info("🔧 Using ChatActionRequestedJoin fallback")
-
         @bot.on(events.ChatAction(func=lambda e: 
             isinstance(e.action, types.ChatActionRequestedJoin) and e.chat_id == Config.GROUP_ID))
         async def handler(event):
@@ -127,8 +130,7 @@ async def start_bot():
     async def voice_handler(event):
         user = await event.get_user()
         record = pending.find_one({"user_id": user.id, "status": "pending"})
-        if not record:
-            return
+        if not record: return
 
         voice_data = await event.download_media(bytes)
         if not is_valid_voice(voice_data):
@@ -155,7 +157,7 @@ async def start_bot():
     async def approve_handler(event):
         if event.sender_id not in Config.ADMINS:
             return await event.answer("🚫 உங்களுக்கு அனுமதி இல்லை.")
-
+        
         action, user_id = event.data.decode().split("_")
         user_id = int(user_id)
         user = await bot.get_entity(user_id)
@@ -179,24 +181,21 @@ async def start_bot():
     @bot.on(events.NewMessage(pattern='/start'))
     async def start(event):
         if event.is_private:
-            # Check for deep link
-            if event.message.message == "/start join":
-                await event.reply(
-                    "👋 வணக்கம்! நீங்கள் தயாராக உள்ளீர்கள்.\n\n"
-                    "பின்னர் குழுவில் சேர விண்ணப்பிக்கவும்:\n"
-                    f"{JOIN_LINK}\n\n"
-                    "நிர்வாகி உங்கள் குரல் பதிவை சரிபார்ப்பார்.",
-                    buttons=[[Button.url("🔗 குழுவில் சேரவும்", JOIN_LINK)]]
-                )
-            else:
-                await event.reply(
-                    "🛡️ வணக்கம்! நீங்கள் இந்த போட்டை தொடங்கியுள்ளீர்கள்.\n\n"
-                    "குழுவில் சேர, பின்வரும் இணைப்பைப் பயன்படுத்தவும்:\n"
-                    f"{JOIN_LINK}\n\n"
-                    "பின்னர் ஒரு **குரல் பதிவு** அனுப்பவும்.",
-                    buttons=[[Button.url("🔗 குழுவில் சேரவும்", JOIN_LINK)]]
-                )
+            await event.reply(START_MSG, buttons=[
+                [Button.url("🔗 குழுவில் சேரவும்", "https://t.me/+_1n657JUXHIzODk1")]
+            ])
         await event.delete()
+
+    # Catch "Hi", "Join", etc. — opens DM thread
+    @bot.on(events.NewMessage(func=lambda e: e.is_private and e.text.lower() in ['hi', 'hello', 'join', 'start', 'வணக்கம்']))
+    async def greet(event):
+        await event.reply(
+            "✅ நீங்கள் தயாராக உள்ளீர்கள்!\n\n"
+            "இப்போது குழுவில் சேர விண்ணப்பிக்கவும்:\n"
+            "https://t.me/+_1n657JUXHIzODk1\n\n"
+            "பின்னர் ஒரு **குரல் பதிவு** அனுப்பவும்.",
+            buttons=[[Button.url("🔗 குழுவில் சேரவும்", "https://t.me/+K2-6Ln_2iMc0aegs")]]
+        )
 
     logger.info("✅ All handlers registered. Bot is live.")
     await bot.run_until_disconnected()
@@ -218,24 +217,10 @@ async def handle_join_request(user, event):
     try:
         await bot.send_message(user.id, WELCOME_MSG.format(name=esc(user.first_name)))
         logger.info(f"✅ Sent welcome DM to {user.id}")
-
-        # Schedule reminder
         asyncio.create_task(reminder_task(user.id, user.first_name))
-
-        # Log to mod group
-        group_id_part = str(Config.GROUP_ID)[4:]
-        topic_link = f"[👉 Go to Topic](https://t.me/c/{group_id_part}/{Config.TOPIC_ID})"
-        await log_mod(
-            f"*📩 New Join Request*\n"
-            f"• {esc(user.first_name)} (`{user.id}`)\n"
-            f"• @{user.username}\n"
-            f"{topic_link}",
-            parse_mode='markdown'
-        )
-
     except Exception as e:
         logger.error(f"❌ Failed to DM {user.id}: {type(e).__name__}: {e}")
-        await log_mod(f"⚠️ DM failed for {user.id}: {e}")
+        await log_mod(f"⚠️ Failed to DM {user.id}: {e}")
 
 async def reminder_task(user_id, name):
     await asyncio.sleep(Config.TIMEOUT)
@@ -248,7 +233,6 @@ async def reminder_task(user_id, name):
 
 # ---------------- Start ----------------
 if __name__ == '__main__':
-    from telethon.tl.custom import Button
     import nest_asyncio
     nest_asyncio.apply()
     loop = asyncio.get_event_loop()
