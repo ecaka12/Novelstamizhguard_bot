@@ -1,17 +1,21 @@
-# bot.py - Auto-detect Telethon join handler, cleaned URLs, safer defaults
+# bot.py - @YourGuardBot
+# ✅ Simple, Private, Synced, Fast, Powerful, Secure, Social, Expressive
+# Voice verification + checklist + auto-approval
+
+import os, io, asyncio, logging
+from datetime import datetime, timezone
 from telethon import TelegramClient, events
 from telethon.tl import types
+from telethon.tl.custom import Button
 from pymongo import MongoClient
-import logging, os, asyncio, io
-from datetime import datetime, timezone
+from config import Config
 
-# Try to load audio analysis (pydub)
+# Optional: pydub for voice analysis
 try:
     from pydub import AudioSegment
     HAS_AUDIO = True
-except Exception as e:
+except ImportError:
     HAS_AUDIO = False
-    logging.warning(f"pydub not available: {e}")
 
 # ---------------- Logging ----------------
 logging.basicConfig(
@@ -20,120 +24,200 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ---------------- Config ----------------
-class Config:
-    API_ID = int(os.getenv("API_ID"))
-    API_HASH = os.getenv("API_HASH")
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    MONGO_URL = os.getenv("MONGO_URL")
-    GROUP_ID = int(os.getenv("GROUP_ID"))
-    TOPIC_ID = int(os.getenv("TOPIC_ID"))
-    VOICE_PENDING_TIMEOUT = int(os.getenv("VOICE_PENDING_TIMEOUT", "7200"))  # 2h
-
 # ---------------- Database ----------------
-mongo = MongoClient(Config.MONGO_URL)
-db = mongo["noveltamiz"]
-pending = db["pending"]
+mongo = MongoClient(Config.MONGO_URI)
+db = mongo.guard_bot
+pending = db.pending_applications
 
 # ---------------- Bot Client ----------------
-bot = TelegramClient("bot", Config.API_ID, Config.API_HASH)
+bot = TelegramClient('guard_bot', Config.API_ID, Config.API_HASH)
 
 # ---------------- Messages ----------------
+
 WELCOME_MSG = (
-    "👋 வணக்கம்! தயவுசெய்து உங்கள் அறிமுக குரல் செய்தியை அனுப்பவும்.\n"
-    "✅ 5 வினாடிகளுக்கு மேல் இருக்க வேண்டும்.\n"
-    "🚫 மிகக் குறுகியவை நிராகரிக்கப்படும்."
+    "👋 வணக்கம்! நீங்கள் **Tamil Novels** குழுவில் சேர விண்ணப்பித்துள்ளீர்கள்.\n\n"
+    "✅ சேர பின்வரும் படிகளை முடிக்கவும்:\n"
+    "1. உங்கள் பெயர், பாலினம்\n"
+    "2. எங்கு இந்த லிங்கை பெற்றீர்கள்?\n"
+    "3. ஏன் சேர விரும்புகிறீர்கள்?\n\n"
+    "🎙️ இதை ஒரு **குரல் பதிவு** அனுப்பவும்.\n"
+    "⏱️ 2 மணி நேரத்துக்குள் அனுப்பவில்லை என்றால் தானாக நிராகரிக்கப்படும்."
+)
+
+REMINDER_MSG = (
+    "⏰ வணக்கம்! இன்னும் **2 மணி நேரம்** உங்களுக்கு உள்ளது.\n"
+    "உடனே குரல் பதிவு அனுப்பவும், இல்லையெனில் உங்கள் விண்ணப்பம் நிராகரிக்கப்படும்."
 )
 
 APPROVED_MSG = (
-    "✅ உங்கள் கோரிக்கை ஒப்புதல் பெற்றது!\n"
-    "🎉 வரவேற்கிறோம்!\n\n"
+    "🎉 வாழ்த்துகள்! நீங்கள் குழுவில் சேர்க்கப்பட்டுள்ளீர்கள்!\n\n"
+    "📌 உங்கள் சந்தா மூலம் எங்களை ஆதரிக்கலாம்: @TamilNovelsPremium\n"
+    "🎁 புதிய அம்சங்கள்: கதை ஆல்பங்கள், பரிசு தொகுப்புகள், செக் லிஸ்டுகள்!\n\n"
     "👉 இங்கே செல்லவும்: https://t.me/c/{group_id_part}/{topic_id}"
 )
 
-# ---------------- Voice Analysis ----------------
-async def analyze_voice(file_bytes: bytes) -> bool:
-    if not HAS_AUDIO:
-        return True  # Skip if pydub unavailable
+REJECTED_MSG = "❌ உங்கள் விண்ணப்பம் நிராகரிக்கப்பட்டது."
+
+# ---------------- Helpers ----------------
+def esc(s):
+    return str(s).replace('_', '\\_').replace('[', '\\[').replace(']', '\\]').replace('`', '\\`')
+
+async def log_mod(text):
     try:
-        audio = AudioSegment.from_file(io.BytesIO(file_bytes), format="ogg")
-        return len(audio) >= 5000  # at least 5 sec
+        await bot.send_message(Config.MODLOG_CHAT, text, parse_mode='markdown')
     except Exception as e:
-        logger.error(f"Voice analysis failed: {e}")
+        logger.warning(f"Failed to log: {e}")
+
+# ---------------- Voice Analysis ----------------
+def is_valid_voice(audio_data):
+    if not HAS_AUDIO:
+        return True
+    try:
+        audio = AudioSegment.from_file(io.BytesIO(audio_data), format="ogg")
+        too_short = len(audio) < 4000
+        too_quiet = audio.dBFS < -50
+        return not (too_short or too_quiet)
+    except Exception as e:
+        logger.warning(f"Audio analysis failed: {e}")
         return False
 
 # ---------------- Handlers ----------------
-def register_handlers():
-    group_id_part = str(Config.GROUP_ID)[4:] if str(Config.GROUP_ID).startswith("-100") else str(Config.GROUP_ID)
+async def start_bot():
+    await bot.start(bot_token=Config.BOT_TOKEN)
+    logger.info("🛡️ Bot started. Registering handlers...")
 
-    if hasattr(events, "ChatJoinRequest"):
-        logger.info("🚀 Using ChatJoinRequest handler (Telethon >= 1.40)")
+    # Auto-detect best join request handler
+    if hasattr(events, 'ChatJoinRequest'):
+        logger.info("🚀 Using ChatJoinRequest (Telethon >= 1.40)")
 
         @bot.on(events.ChatJoinRequest)
-        async def join_request_handler(event):
+        async def handler(event):
             if event.chat_id != Config.GROUP_ID:
                 return
             user = await event.get_user()
-            await event.approve()
-            try:
-                await bot.send_message(user.id, WELCOME_MSG)
-                pending.insert_one({
-                    "user_id": user.id,
-                    "request_time": datetime.now(timezone.utc).isoformat(),
-                    "status": "awaiting_voice"
-                })
-            except Exception as e:
-                logger.error(f"Failed to DM user {user.id}: {e}")
+            await handle_join_request(user, event)
 
     else:
-        logger.info("🔧 Using ChatActionRequestedJoin fallback (Telethon 1.24–1.39)")
+        logger.info("🔧 Using ChatActionRequestedJoin fallback")
 
-        @bot.on(events.ChatAction(func=lambda e: isinstance(e.action, types.ChatActionRequestedJoin)))
-        async def join_request_handler(event):
-            if event.chat_id != Config.GROUP_ID:
-                return
+        @bot.on(events.ChatAction(func=lambda e: 
+            isinstance(e.action, types.ChatActionRequestedJoin) and e.chat_id == Config.GROUP_ID))
+        async def handler(event):
             user = await event.get_user()
-            # Approve user
-            await bot.edit_permissions(Config.GROUP_ID, user.id, view_messages=True)
-            try:
-                await bot.send_message(user.id, WELCOME_MSG)
-                pending.insert_one({
-                    "user_id": user.id,
-                    "request_time": datetime.now(timezone.utc).isoformat(),
-                    "status": "awaiting_voice"
-                })
-            except Exception as e:
-                logger.error(f"Failed to DM user {user.id}: {e}")
+            await handle_join_request(user, event)
 
-    # Handle voice note in DM
+    # Handle voice in DM
     @bot.on(events.NewMessage(incoming=True, func=lambda e: e.is_private and e.voice))
     async def voice_handler(event):
-        user_id = event.sender_id
-        record = pending.find_one({"user_id": user_id})
+        user = await event.get_user()
+        record = pending.find_one({"user_id": user.id, "status": "pending"})
         if not record:
             return
-        file = await event.download_media(bytes)
-        ok = await analyze_voice(file)
-        if ok:
-            pending.delete_one({"user_id": user_id})
-            await event.reply("🎉 குரல் சரிபார்ப்பு வெற்றி! வரவேற்கிறோம்.")
-            # Optionally send approved message with link
-            await event.reply(APPROVED_MSG.format(group_id_part=group_id_part, topic_id=Config.TOPIC_ID))
-        else:
-            await event.reply("❌ குரல் குறுகியது அல்லது செல்லாதது. மீண்டும் முயற்சிக்கவும்.")
 
-# ---------------- Main ----------------
-async def main():
-    if not HAS_AUDIO:
-        logger.warning("🔇 Audio analysis disabled: pydub/ffmpeg not available")
-    await bot.start(bot_token=Config.BOT_TOKEN)
-    register_handlers()
-    logger.info("🤖 Bot started. Awaiting events...")
+        voice_data = await event.download_media(bytes)
+        if not is_valid_voice(voice_data):
+            await event.reply("❌ குரல் பதிவு மிகக் குறுகியது அல்லது தெளிவற்றது. மீண்டும் அனுப்பவும்.")
+            return
+
+        msg = await event.forward_to(Config.MODLOG_CHAT)
+        await event.reply("✅ குரல் பதிவு பெறப்பட்டது. நிர்வாகி விரைவில் பதிலளிப்பார்.")
+        pending.update_one({"user_id": user.id}, {"$set": {"status": "voice_sent", "msg_id": msg.id}})
+
+        # Notify mods
+        await bot.send_message(
+            Config.MODLOG_CHAT,
+            f"🎤 Valid voice from {esc(user.first_name)} (`{user.id}`)",
+            buttons=[
+                [Button.inline("✅ Approve", data=f"approve_{user.id}"),
+                 Button.inline("❌ Reject", data=f"reject_{user.id}")]
+            ],
+            parse_mode='markdown'
+        )
+
+    # Approval callback
+    @bot.on(events.CallbackQuery(data=b'^(approve|reject)_\\d+'))
+    async def approve_handler(event):
+        if event.sender_id not in Config.ADMINS:
+            return await event.answer("🚫 அனுமதி இல்லை")
+
+        action, user_id = event.data.decode().split("_")
+        user_id = int(user_id)
+        user = await bot.get_entity(user_id)
+
+        if action == "approve":
+            await bot.edit_permissions(Config.GROUP_ID, user_id, view_messages=True)
+            group_id_part = str(Config.GROUP_ID)[4:]
+            await bot.send_message(user_id, APPROVED_MSG.format(
+                name=esc(user.first_name),
+                group_id_part=group_id_part,
+                topic_id=Config.TOPIC_ID
+            ))
+            pending.update_one({"user_id": user_id}, {"$set": {"status": "approved"}})
+            await event.edit("✅ Approved")
+        else:
+            await bot.send_message(user_id, REJECTED_MSG)
+            pending.update_one({"user_id": user_id}, {"$set": {"status": "rejected"}})
+            await event.edit("❌ Rejected")
+
+    # Start command
+    @bot.on(events.NewMessage(pattern='/start'))
+    async def start(event):
+        if event.is_private:
+            await event.reply("🛡️ இந்த போட் குழு சேர்வு செயல்முறைக்கானது.")
+        await event.delete()
+
+    logger.info("✅ All handlers registered. Bot is live.")
     await bot.run_until_disconnected()
 
-if __name__ == "__main__":
+async def handle_join_request(user, event):
+    logger.info(f"📩 Join request from {user.id} ({user.first_name})")
+
+    pending.update_one(
+        {"user_id": user.id},
+        {"$set": {
+            "first_name": user.first_name,
+            "username": user.username,
+            "request_time": datetime.now(timezone.utc),
+            "status": "pending"
+        }},
+        upsert=True
+    )
+
+    try:
+        await bot.send_message(user.id, WELCOME_MSG.format(name=esc(user.first_name)))
+        logger.info(f"✅ Sent DM to {user.id}")
+
+        # Schedule reminder
+        asyncio.create_task(reminder_task(user.id, user.first_name))
+
+        # Log to mod group
+        group_id_part = str(Config.GROUP_ID)[4:]
+        topic_link = f"[👉 Go to Topic](https://t.me/c/{group_id_part}/{Config.TOPIC_ID})"
+        await log_mod(
+            f"*📩 New Join Request*\n"
+            f"• {esc(user.first_name)} (`{user.id}`)\n"
+            f"• @{user.username}\n"
+            f"{topic_link}",
+            parse_mode='markdown'
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Failed to DM {user.id}: {type(e).__name__}: {e}")
+        await log_mod(f"❌ DM failed for {user.id}: {e}")
+
+async def reminder_task(user_id, name):
+    await asyncio.sleep(Config.TIMEOUT)
+    record = pending.find_one({"user_id": user_id, "status": "pending"})
+    if record:
+        try:
+            await bot.send_message(user_id, REMINDER_MSG.format(name=esc(name)))
+        except Exception as e:
+            logger.warning(f"Failed to send reminder: {e}")
+
+# ---------------- Start ----------------
+if __name__ == '__main__':
     import nest_asyncio
     nest_asyncio.apply()
     import asyncio
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
+    loop.run_until_complete(start_bot())
