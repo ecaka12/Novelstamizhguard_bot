@@ -127,6 +127,62 @@ async def start_bot():
     await bot.start(bot_token=Config.BOT_TOKEN)
     logger.info("🛡️ Bot started. Registering handlers...")
 
+    # --- Centralized Join Processing Function ---
+    async def process_new_member(user):
+        """Common processing for new members joining the group."""
+        if not user:
+            logger.warning("⚠️ process_new_member called with None user.")
+            return
+
+        logger.info(f"📥 Processing new member: {user.id} ({user.first_name})")
+
+        # --- State Transition Logic ---
+        # Check if the user already has a record (started, pending, etc.)
+        existing_record = pending.find_one({"user_id": user.id})
+        logger.debug(f"  Existing DB record for {user.id}: {existing_record}")
+
+        # Prepare data to update/set in the database
+        update_data = {
+            "first_name": user.first_name,
+            "username": user.username,
+            "request_time": datetime.now(timezone.utc),
+            "status": "pending"  # *** CRITICAL: Set status to 'pending' upon join ***
+        }
+        logger.info(f"💾 Updating/Creating record for {user.id} with status 'pending'. Data: {update_data}")
+
+        # Update or create the database record
+        result = pending.update_one(
+            {"user_id": user.id}, # Find by user ID
+            {"$set": update_data}, # Set all fields
+            upsert=True # Create if it doesn't exist
+        )
+        logger.info(f"✅ Database record for {user.id} updated/created. Matched: {result.matched_count}, Modified: {result.modified_count}, Upserted: {result.upserted_id is not None}")
+
+        # --- Send Welcome Message and Start Reminder ---
+        # Only send welcome/reminder if this is a new join (status transitioned to pending)
+        # This prevents spamming if the user joins multiple times or events fire repeatedly
+        # We can check if a new document was upserted or if the status changed from non-pending
+        if result.upserted_id or (existing_record and existing_record.get("status") != "pending"):
+             try:
+                logger.info(f"📤 Sending WELCOME_MSG to {user.id}")
+                await bot.send_message(user.id, WELCOME_MSG.format(name=esc(user.first_name)))
+                logger.info(f"✅ Sent welcome DM to {user.id}")
+                # Start reminder task
+                asyncio.create_task(reminder_task(user.id, user.first_name))
+                logger.info(f"⏱️ Started reminder task for {user.id}")
+             except errors.UserIsBlockedError:
+                logger.warning(f"🚫 User {user.id} has blocked the bot. Cannot send welcome message.")
+                await log_mod(f"⚠️ DM failed for {user.id} ({user.first_name}): User blocked the bot.")
+             except errors.InputUserDeactivatedError:
+                logger.warning(f"💀 User {user.id} account is deactivated.")
+                await log_mod(f"⚠️ DM failed for {user.id} ({user.first_name}): User account deactivated.")
+             except Exception as e:
+                error_msg = f"❌ Failed to DM {user.id} ({user.first_name}): {type(e).__name__}: {e}"
+                logger.error(error_msg)
+                await log_mod(error_msg)
+        else:
+             logger.info(f"ℹ️ Skipping welcome/reminder for {user.id} (likely already pending or record existed).")
+
     # Handle voice notes in DM
     @bot.on(events.NewMessage(incoming=True, func=lambda e: e.is_private and e.voice))
     async def voice_handler(event):
@@ -136,14 +192,29 @@ async def start_bot():
             return
 
         logger.info(f"🎤 Received voice note from user {user.id} ({user.first_name})")
-        logger.info(f"🔍 Checking for pending application for user {user.id}")
+        # --- Enhanced Logic: Accept 'started' or 'pending' ---
+        # This provides robustness in case the join event is slightly delayed or missed
+        # but the user has initiated the process.
+        logger.info(f"🔍 Checking for application record (started/pending) for user {user.id}")
+        # Find record where status is either 'started' or 'pending'
+        record = pending.find_one({
+            "user_id": user.id,
+            "status": {"$in": ["started", "pending"]} # Accept both statuses
+        })
 
-        # Check if user has a pending application
-        record = pending.find_one({"user_id": user.id, "status": "pending"})
         if not record:
-            logger.warning(f"❌ No pending application found for {user.id} ({user.first_name})")
+            logger.warning(f"❌ No application record (started/pending) found for {user.id} ({user.first_name})")
             await event.reply("❌ உங்கள் விண்ணப்பம் காணப்படவில்லை. முதலில் குழுவில் சேர விண்ணப்பிக்கவும்.")
             return
+
+        # If a record exists, ensure its status is 'pending' before proceeding
+        # This handles the case where status was 'started' and we are accepting it.
+        if record.get("status") != "pending":
+            logger.info(f"🔄 Updating status for {user.id} from '{record.get('status')}' to 'pending' upon voice receipt.")
+            pending.update_one({"user_id": user.id}, {"$set": {"status": "pending"}})
+            record["status"] = "pending" # Update local record for logging
+
+        logger.info(f"🔄 User {user.id} state: {record['status']} → voice_sent (processing voice)")
 
         try:
             logger.info(f"📥 Downloading voice note from {user.id}")
@@ -186,90 +257,47 @@ async def start_bot():
             logger.error(error_msg)
             await log_mod(error_msg)
 
-    # Handle user joining the group (ChatAction) - Enhanced Debugging
+    # --- Improved ChatAction Handler ---
     @bot.on(events.ChatAction)
     async def chat_action_handler(event):
-        # --- Enhanced Debug Logging START ---
-        logger.debug(f"🔍 === DEBUG ChatAction Event Details ===")
-        logger.debug(f"  Event Type: {type(event)}")
-        logger.debug(f"  Event Chat ID: {event.chat_id}")
-        logger.debug(f"  Event Original Chat ID (if different): {getattr(event, 'original_chat_id', 'N/A')}")
-        logger.debug(f"  Event Users: {getattr(event, 'users', 'N/A')}")
-        logger.debug(f"  Event User IDs: {getattr(event, 'user_ids', 'N/A')}")
-        logger.debug(f"  Event Added By: {getattr(event, 'added_by', 'N/A')}")
-        logger.debug(f"  Event Kicked: {getattr(event, 'user_kicked', False)}")
-        logger.debug(f"  Event Left: {getattr(event, 'user_left', False)}")
-        logger.debug(f"  Event Joined: {getattr(event, 'user_joined', False)}")
-        logger.debug(f"  Event Invited: {getattr(event, 'user_invited', False)}") # Newer attribute
-        logger.debug(f"  Event Added: {getattr(event, 'user_added', False)}")
-        if hasattr(event, 'action_message') and event.action_message:
-            logger.debug(f"  Action Message Action Type: {type(event.action_message.action)}")
-            logger.debug(f"  Action Message Action Details: {event.action_message.action}")
-        logger.debug(f"  Config.GROUP_ID: {Config.GROUP_ID}")
-        logger.debug(f"  Match Check (event.chat_id == Config.GROUP_ID): {event.chat_id == Config.GROUP_ID}")
-        logger.debug(f"🔍 === END DEBUG ChatAction Event Details ===")
-        # --- Enhanced Debug Logging END ---
-
         # Only proceed if it's our target group
         if event.chat_id != Config.GROUP_ID:
-            logger.debug(f"⏭️ Skipping ChatAction, not our target group ({Config.GROUP_ID}).")
+            logger.debug(f"⏭️ Skipping ChatAction for group {event.chat_id}, not our target {Config.GROUP_ID}.")
             return
 
-        logger.info(f"👥 Relevant ChatAction event received for group {event.chat_id}")
+        logger.info(f"👥 ChatAction event received for target group {event.chat_id}")
 
-        # Check for user joining or being added (cover different join scenarios)
-        # Include user_invited which might be relevant for invite links
-        if not (event.user_joined or event.user_added or event.user_invited):
-             logger.debug("⏭️ Skipping ChatAction, not a join/add/invite event.")
-             return
+        # --- Enhanced Join Detection ---
+        # 1. Check for join via invite link (common for private groups)
+        if (hasattr(event, 'action_message') and event.action_message and
+            isinstance(event.action_message.action, types.MessageActionChatJoinedByLink)):
+            logger.info("📥 Detected: User joined via invite link (MessageActionChatJoinedByLink)")
+            user = await event.get_user() # Get the user who joined
+            if user:
+                logger.info(f"👤 User joining via link: {user.id} ({user.first_name})")
+                await process_new_member(user)
+            else:
+                logger.warning("⚠️ Could not get user from MessageActionChatJoinedByLink event.")
+            return # Exit after handling this specific case
 
-        # Get list of users affected
-        users = event.users if event.users else [await event.get_user()] if event.user else []
-        logger.info(f"👥 Users involved in ChatAction: {[u.id for u in users if u]}")
+        # 2. Check for standard user joins or adds
+        if event.user_joined or event.user_added:
+            logger.info("📥 Detected: Standard user join/add event")
+            # Get list of users affected (might be multiple for adds)
+            users = event.users if event.users else [await event.get_user()] if event.user else []
+            logger.info(f"👥 Users involved in join/add: {[u.id for u in users if u]}")
 
-        for user in users:
-            if not user:
-                logger.warning("⚠️ Encountered None user in ChatAction event users list.")
-                continue
-            logger.info(f"📥 Processing join/add/invite for user: {user.id} ({user.first_name})")
+            for user in users:
+                if user:
+                    logger.info(f"👤 Processing standard join/add for user: {user.id} ({user.first_name})")
+                    await process_new_member(user)
+                else:
+                    logger.warning("⚠️ Encountered None user in standard join/add event.")
+            return # Exit after handling standard joins/adds
 
-            # Check if the user already has a pending or started record
-            existing_record = pending.find_one({"user_id": user.id})
-            logger.debug(f"  Existing DB record for {user.id}: {existing_record}")
-
-            # Always update/create the record to mark as pending upon join
-            update_data = {
-                "first_name": user.first_name,
-                "username": user.username,
-                "request_time": datetime.now(timezone.utc),
-                "status": "pending"
-            }
-            logger.info(f"💾 Updating/Creating pending record for {user.id} with  {update_data}")
-            pending.update_one(
-                {"user_id": user.id},
-                {"$set": update_data},
-                upsert=True
-            )
-            logger.info(f"✅ Database record for {user.id} updated to 'pending'.")
-
-            # Send welcome message and start reminder
-            try:
-                logger.info(f"📤 Sending WELCOME_MSG to {user.id}")
-                await bot.send_message(user.id, WELCOME_MSG.format(name=esc(user.first_name)))
-                logger.info(f"✅ Sent welcome DM to {user.id}")
-                # Start reminder task
-                asyncio.create_task(reminder_task(user.id, user.first_name))
-                logger.info(f"⏱️ Started reminder task for {user.id}")
-            except errors.UserIsBlockedError:
-                logger.warning(f"🚫 User {user.id} has blocked the bot. Cannot send welcome message.")
-                await log_mod(f"⚠️ DM failed for {user.id} ({user.first_name}): User blocked the bot.")
-            except errors.InputUserDeactivatedError:
-                logger.warning(f"💀 User {user.id} account is deactivated.")
-                await log_mod(f"⚠️ DM failed for {user.id} ({user.first_name}): User account deactivated.")
-            except Exception as e:
-                error_msg = f"❌ Failed to DM {user.id} ({user.first_name}): {type(e).__name__}: {e}"
-                logger.error(error_msg)
-                await log_mod(error_msg)
+        # 3. Log other ChatAction events for potential future debugging
+        logger.debug(f"🔍 Other ChatAction event (not join/add/link): {event}")
+        # --- End Enhanced Join Detection ---
 
     # Approval/Rejection callback
     @bot.on(events.CallbackQuery(pattern=r"^(approve|reject)_(\d+)$"))
@@ -347,17 +375,19 @@ async def start_bot():
         logger.info(f"💬 Greeting trigger received from {user.id}: '{event.text}'")
 
         # Create or update a 'started' record to track initial contact
+        update_data = {
+            "first_name": user.first_name,
+            "username": user.username,
+            "last_interaction": datetime.now(timezone.utc),
+            "status": "started" # Indicate they've started the process
+        }
+        logger.info(f"💾 Updating/creating 'started' record for {user.id} with data: {update_data}")
         pending.update_one(
             {"user_id": user.id},
-            {"$set": {
-                "first_name": user.first_name,
-                "username": user.username,
-                "last_interaction": datetime.now(timezone.utc),
-                "status": "started" # Indicate they've started the process
-            }},
+            {"$set": update_data},
             upsert=True
         )
-        logger.info(f"💾 Updated/created 'started' record for {user.id}")
+        logger.info(f"🔄 User {user.id} state: N/A/other → started")
 
         await event.reply(
             "✅ நீங்கள் தயாராக உள்ளீர்கள்!\n\n"
@@ -387,7 +417,17 @@ async def start_bot():
             except Exception as e:
                 logger.warning(f"⚠️ Failed to send reminder to {user_id}: {e}")
         else:
-            logger.info(f"ℹ️ Reminder task for {user_id} cancelled (status not pending).")
+            logger.info(f"ℹ️ Reminder task for {user_id} cancelled (status not pending or record changed).")
+
+    # --- Optional Debug Command ---
+    @bot.on(events.NewMessage(pattern='/status'))
+    async def status_check(event):
+        if event.is_private: # Only respond in private chats
+            user = await event.get_sender()
+            record = pending.find_one({"user_id": user.id})
+            status_msg = f"🔄 Your current application status: `{record.get('status') if record else 'No record found'}`"
+            await event.reply(status_msg, parse_mode='markdown')
+            logger.info(f"ℹ️ /status command used by {user.id}. Response: {status_msg}")
 
     logger.info("✅ All handlers registered. Bot is live and waiting for events.")
     await bot.run_until_disconnected()
