@@ -1,5 +1,6 @@
 Telethon==1.40.0    
 pymongo==4.10.1
 pydub==0.9.4
+ffmpeg-python
 dnspython==2.6.1
 nest-asyncio==1.6.0
