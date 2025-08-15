@@ -69,7 +69,7 @@ APPROVED_MSG = (
 
 REJECTED_MSG = "❌ உங்கள் விண்ணப்பம் நிராகரிக்கப்பட்டது."
 
-JOIN_LINK = "https://t.me/+K2-6Ln_2iMc0aegs"  # Your group invite link
+JOIN_LINK = "https://t.me/+_1n657JUXHIzODk1"  # Your group invite link
 
 # ---------------- Helpers ----------------
 def esc(s):
